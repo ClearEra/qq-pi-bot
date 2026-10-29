@@ -1,0 +1,31 @@
+{
+  "name": "qq-pi-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A QQ bot powered by Pi and Pi Durable",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "setup": "npm run build && node dist/setup.js",
+    "start": "node dist/main.js",
+    "dev": "tsx src/main.ts",
+    "test": "npm run build && node --test dist/*.test.js",
+    "deploy": "node scripts/deploy.mjs",
+    "install-service": "npm run deploy",
+    "uninstall-service": "node dist/service.js uninstall",
+    "service-status": "node dist/service.js status"
+  },
+  "engines": { "node": ">=22.19.0" },
+  "dependencies": {
+    "@earendil-works/chord": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-durable": "1.4.0",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/ws": "^8.5.14",
+    "tsx": "^4.20.3",
+    "typescript": "5.8.3"
+  }
+}
