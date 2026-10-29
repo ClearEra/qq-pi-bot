@@ -30,6 +30,10 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
+      - name: Require issue-linked PR
+        run: node scripts/check-pr.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
       - run: npm ci
       - run: npm test
       - run: npm audit --omit=dev

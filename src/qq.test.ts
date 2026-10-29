@@ -25,6 +25,55 @@ test("official token and REST routes use cached auth and stable passive-reply se
   assert.equal(new Headers(requests[1]?.options?.headers).get("Authorization"), "QQBot fake-test-token");
 });
 
+test("Gateway checkpoints are serialized and stop after failed ingestion", { timeout: 10_000 }, async () => {
+  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  await once(server, "listening");
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const sequences: number[] = [];
+  const messages: string[] = [];
+  let release!: () => void;
+  const paused = new Promise<void>((resolve) => { release = resolve; });
+  let started!: () => void;
+  const ingesting = new Promise<void>((resolve) => { started = resolve; });
+  let failed!: () => void;
+  const failure = new Promise<void>((resolve) => { failed = resolve; });
+  const client = new QQClient({ appId: "123456", clientSecret: "fake-test-secret", websocketUrl: `ws://127.0.0.1:${address.port}`,
+    fetch: async () => Response.json({ access_token: "fake-test-token", expires_in: 7200 }),
+    async onMessage(_type, event) {
+      messages.push(event.id!);
+      if (event.id === "first") { started(); await paused; }
+      else throw new Error("simulated ingest failure");
+    },
+    onSequence(_session, sequence) { sequences.push(sequence); },
+    onStatus(status, details) { if (status === "error" && details === "simulated ingest failure") failed(); },
+  });
+  try {
+    const connected = once(server, "connection");
+    await client.start();
+    const [socket] = await connected;
+    const identified = once(socket, "message");
+    socket.send(JSON.stringify({ op: 10, d: { heartbeat_interval: 45_000 } }));
+    await identified;
+    socket.send(JSON.stringify({ op: 0, t: "READY", s: 1, d: { session_id: "s" } }));
+    for (const [id, sequence] of [["first", 2], ["fails", 3], ["must-not-run", 4]]) {
+      socket.send(JSON.stringify({ op: 0, t: "C2C_MESSAGE_CREATE", s: sequence, d: { id } }));
+    }
+    await ingesting;
+    assert.deepEqual(messages, ["first"]);
+    assert.ok(!sequences.includes(2));
+    release();
+    await failure;
+    assert.deepEqual(messages, ["first", "fails"]);
+    assert.equal(Math.max(...sequences), 2);
+  } finally {
+    release();
+    client.stop();
+    for (const socket of server.clients) socket.terminate();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 for (const resume of [false, true]) {
   test(`Gateway ${resume ? "RESUME" : "IDENTIFY"}, dispatch, and server heartbeat`, { timeout: 10_000 }, async () => {
     const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });

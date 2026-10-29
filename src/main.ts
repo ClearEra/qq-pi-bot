@@ -22,6 +22,7 @@ interface Runtime {
   client: QQClient;
   chatQueues: Map<string, Promise<void>>;
   outboxRun: Promise<void> | undefined;
+  shutdown: AbortController;
 }
 
 let runtime: Runtime | undefined;
@@ -81,6 +82,7 @@ async function runBot(): Promise<void> {
     store,
     chatQueues: new Map<string, Promise<void>>(),
     outboxRun: undefined,
+    shutdown: new AbortController(),
   });
   const state = store.gatewayState();
   const client = new QQClient({
@@ -131,6 +133,7 @@ async function runBot(): Promise<void> {
     const stop = (): void => {
       if (stopping) return;
       stopping = true;
+      bot.shutdown.abort();
       clearInterval(recoveryTimer);
       console.log("Pi QQ Bot 正在停止");
       client.stop();
@@ -182,6 +185,7 @@ function queueChat(bot: Runtime, chatKey: string, operation: () => Promise<void>
 
 async function processChat(bot: Runtime, chatKey: string): Promise<void> {
   for (;;) {
+    if (bot.shutdown.signal.aborted) return;
     const row = bot.store.nextInbound(chatKey);
     if (!row) return;
     if (Date.now() - row.receivedAt > bot.config.replyDeadlineSeconds * 1_000) {
@@ -223,8 +227,15 @@ async function processChat(bot: Runtime, chatKey: string): Promise<void> {
     let timedOut = false;
     const deadlineController = new AbortController();
     let decision;
+    let onShutdown!: () => void;
+    const shutdown = new Promise<undefined>((resolve) => {
+      onShutdown = () => resolve(undefined);
+      bot.shutdown.signal.addEventListener("abort", onShutdown, { once: true });
+      if (bot.shutdown.signal.aborted) resolve(undefined);
+    });
     try {
       decision = await Promise.race([
+        shutdown,
         decisionPromise,
         sleep(remaining, undefined, { signal: deadlineController.signal }).then(() => {
           timedOut = true;
@@ -233,7 +244,9 @@ async function processChat(bot: Runtime, chatKey: string): Promise<void> {
       ]);
     } finally {
       deadlineController.abort();
+      bot.shutdown.signal.removeEventListener("abort", onShutdown);
     }
+    if (bot.shutdown.signal.aborted) return; // Leave admitted work pending for recovery.
     if (timedOut) {
       bot.store.finishInbound(row.eventKey, true);
       await conversation.abort(BACKGROUND_CONTEXT).catch(() => undefined);
@@ -273,6 +286,7 @@ async function drainOutbox(bot: Runtime): Promise<void> {
   bot.outboxRun = deliverPendingReplies({
     store: bot.store,
     deadlineMs: bot.config.replyDeadlineSeconds * 1_000,
+    signal: bot.shutdown.signal,
     send: (type, peer, messageId, content) => bot.client.sendMessage(type, peer, messageId, content),
     report: (error) => console.error(JSON.stringify({ at: new Date().toISOString(), sendError: safeMessage(error) })),
   }).finally(() => { bot.outboxRun = undefined; });
@@ -296,5 +310,7 @@ function safeMessage(error: unknown): string {
 
 main().catch((error: unknown) => {
   console.error(JSON.stringify({ at: new Date().toISOString(), fatal: safeMessage(error) }));
-  process.exitCode = 1;
+  // Startup may have partially initialized the Harness. Terminate so no scheduler
+  // survives a failed startup; committed work resumes in the next process.
+  process.exit(1);
 });

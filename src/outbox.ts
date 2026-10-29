@@ -6,12 +6,14 @@ export async function deliverPendingReplies(options: {
   send: (chatType: "c2c" | "group", peer: string, messageId: string, content: string) => Promise<void>;
   report: (error: unknown) => void;
   now?: () => number;
+  signal?: AbortSignal;
 }): Promise<void> {
   const { store } = options;
   const now = options.now ?? Date.now;
   const blockedChats = new Set<string>();
   // One attempt per row per pass. A failed peer never monopolizes unrelated conversations.
   for (const row of store.pendingOutbox()) {
+    if (options.signal?.aborted) return;
     const chat = `${row.chatType}:${row.peerOpenId}`;
     const inbound = store.getInbound(row.eventKey);
     if (!inbound || now() - inbound.receivedAt >= options.deadlineMs) {
