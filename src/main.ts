@@ -248,8 +248,10 @@ async function processChat(bot: Runtime, chatKey: string): Promise<void> {
     }
     if (bot.shutdown.signal.aborted) return; // Leave admitted work pending for recovery.
     if (timedOut) {
+      // Keep the inbox row recoverable until Durable cancellation is committed.
+      // A crash/close during abort must leave startup able to find obsolete work.
+      await conversation.abort(BACKGROUND_CONTEXT);
       bot.store.finishInbound(row.eventKey, true);
-      await conversation.abort(BACKGROUND_CONTEXT).catch(() => undefined);
       continue;
     }
     if (!decision || decision.action !== "reply" || !decision.content.trim()) {
